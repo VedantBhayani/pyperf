@@ -1,6 +1,14 @@
 Changelog
 =========
 
+Version 2.11.0 (in development)
+-------------------------------
+
+* Feature: Add Windows memory tracking support using ``GetProcessMemoryInfo``.
+  Peak pagefile usage is now reported for benchmarks on Windows.
+* Bugfix: Fix ``test_command`` failure on Windows due to worker process exit code 1
+  when memory tracking was attempted.
+
 Version 2.10.0 (2026-02-07)
 ---------------------------
 

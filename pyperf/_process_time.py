@@ -27,6 +27,60 @@ try:
 except ImportError:
     resource = None
 
+# Windows memory tracking via GetProcessMemoryInfo
+try:
+    import ctypes
+    from ctypes import wintypes
+except ImportError:
+    ctypes = None
+    wintypes = None
+
+SIZE_T = ctypes.c_size_t if ctypes else None
+
+class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
+    _fields_ = [
+        ('cb', wintypes.DWORD),
+        ('PageFaultCount', wintypes.DWORD),
+        ('PeakWorkingSetSize', SIZE_T),
+        ('WorkingSetSize', SIZE_T),
+        ('QuotaPeakPagedPoolUsage', SIZE_T),
+        ('QuotaPagedPoolUsage', SIZE_T),
+        ('QuotaPeakNonPagedPoolUsage', SIZE_T),
+        ('QuotaNonPagedPoolUsage', SIZE_T),
+        ('PagefileUsage', SIZE_T),
+        ('PeakPagefileUsage', SIZE_T),
+        ('PrivateUsage', SIZE_T),
+    ]
+
+GetProcessMemoryInfo = None
+if ctypes:
+    try:
+        psapi = ctypes.WinDLL('psapi')
+        GetProcessMemoryInfo = psapi.GetProcessMemoryInfo
+        GetProcessMemoryInfo.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX),
+            wintypes.DWORD,
+        ]
+        GetProcessMemoryInfo.restype = wintypes.BOOL
+    except (AttributeError, OSError):
+        GetProcessMemoryInfo = None
+
+
+def get_peak_pagefile_usage():
+    """Get peak pagefile usage on Windows via GetProcessMemoryInfo."""
+    if not ctypes or GetProcessMemoryInfo is None:
+        return 0
+    process = ctypes.windll.kernel32.GetCurrentProcess()
+    counters = PROCESS_MEMORY_COUNTERS_EX()
+    counters.cb = ctypes.sizeof(counters)
+    ret = GetProcessMemoryInfo(process,
+                               ctypes.byref(counters),
+                               ctypes.sizeof(counters))
+    if not ret:
+        return 0
+    return counters.PeakPagefileUsage
+
 
 def get_max_rss(*, children):
     if resource is not None:
@@ -38,6 +92,9 @@ def get_max_rss(*, children):
         if sys.platform == 'darwin':
             return usage.ru_maxrss
         return usage.ru_maxrss * 1024
+    elif sys.platform == 'win32':
+        # On Windows, use GetProcessMemoryInfo to get peak pagefile usage
+        return get_peak_pagefile_usage()
     else:
         return 0
 

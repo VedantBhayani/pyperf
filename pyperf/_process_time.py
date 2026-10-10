@@ -70,12 +70,22 @@ def bench_process_windows(args, kw):
             child = None
 
         peak_rss = 0
+        if child is not None:
+            # Sample once immediately: a short-lived child may exit
+            # before the first sleep elapses.
+            try:
+                peak_rss = max(peak_rss, child.memory_info().rss)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                child = None
         while child is not None and proc.poll() is None:
             try:
                 peak_rss = max(peak_rss, child.memory_info().rss)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 break
-            time.sleep(0.001)
+            # A pyperf value takes at least 100 ms: sampling every
+            # 50 ms gives at least two samples per value without
+            # spamming memory_info() syscalls.
+            time.sleep(0.05)
 
     return proc.returncode, peak_rss
 

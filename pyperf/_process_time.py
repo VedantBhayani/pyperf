@@ -12,7 +12,9 @@ fork()+exec().
 Measure wall-time, not CPU time.
 
 If resource.getrusage() is available: compute the maximum RSS memory in bytes
-per process and writes it into stdout as a second line.
+per process and writes it into stdout as a second line. On Windows,
+resource.getrusage() is unavailable, so the peak RSS of the child process
+is sampled with psutil instead.
 """
 import contextlib
 import json
@@ -27,60 +29,6 @@ try:
 except ImportError:
     resource = None
 
-# Windows memory tracking via GetProcessMemoryInfo
-try:
-    import ctypes
-    from ctypes import wintypes
-except ImportError:
-    ctypes = None
-    wintypes = None
-
-SIZE_T = ctypes.c_size_t if ctypes else None
-
-class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
-    _fields_ = [
-        ('cb', wintypes.DWORD),
-        ('PageFaultCount', wintypes.DWORD),
-        ('PeakWorkingSetSize', SIZE_T),
-        ('WorkingSetSize', SIZE_T),
-        ('QuotaPeakPagedPoolUsage', SIZE_T),
-        ('QuotaPagedPoolUsage', SIZE_T),
-        ('QuotaPeakNonPagedPoolUsage', SIZE_T),
-        ('QuotaNonPagedPoolUsage', SIZE_T),
-        ('PagefileUsage', SIZE_T),
-        ('PeakPagefileUsage', SIZE_T),
-        ('PrivateUsage', SIZE_T),
-    ]
-
-GetProcessMemoryInfo = None
-if ctypes:
-    try:
-        psapi = ctypes.WinDLL('psapi')
-        GetProcessMemoryInfo = psapi.GetProcessMemoryInfo
-        GetProcessMemoryInfo.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX),
-            wintypes.DWORD,
-        ]
-        GetProcessMemoryInfo.restype = wintypes.BOOL
-    except (AttributeError, OSError):
-        GetProcessMemoryInfo = None
-
-
-def get_peak_pagefile_usage():
-    """Get peak pagefile usage on Windows via GetProcessMemoryInfo."""
-    if not ctypes or GetProcessMemoryInfo is None:
-        return 0
-    process = ctypes.windll.kernel32.GetCurrentProcess()
-    counters = PROCESS_MEMORY_COUNTERS_EX()
-    counters.cb = ctypes.sizeof(counters)
-    ret = GetProcessMemoryInfo(process,
-                               ctypes.byref(counters),
-                               ctypes.sizeof(counters))
-    if not ret:
-        return 0
-    return counters.PeakPagefileUsage
-
 
 def get_max_rss(*, children):
     if resource is not None:
@@ -92,11 +40,44 @@ def get_max_rss(*, children):
         if sys.platform == 'darwin':
             return usage.ru_maxrss
         return usage.ru_maxrss * 1024
-    elif sys.platform == 'win32':
-        # On Windows, use GetProcessMemoryInfo to get peak pagefile usage
-        return get_peak_pagefile_usage()
     else:
         return 0
+
+
+def bench_process_windows(args, kw):
+    """Run the command once on Windows, return (exitcode, peak RSS).
+
+    resource.getrusage() is unavailable on Windows, so sample the RSS of
+    the live child process with psutil (a required pyperf dependency).
+    A reaped child can no longer be queried, hence the polling loop.
+    Return 0 as the peak RSS if psutil is not available.
+    """
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+
+    proc = subprocess.Popen(args, **kw)
+    with proc:
+        if psutil is None:
+            proc.wait()
+            return proc.returncode, 0
+
+        try:
+            child = psutil.Process(proc.pid)
+        except psutil.NoSuchProcess:
+            # Child already exited before we could attach to it
+            child = None
+
+        peak_rss = 0
+        while child is not None and proc.poll() is None:
+            try:
+                peak_rss = max(peak_rss, child.memory_info().rss)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                break
+            time.sleep(0.001)
+
+    return proc.returncode, peak_rss
 
 
 def merge_profile_stats_files(src, dst):
@@ -124,13 +105,20 @@ def bench_process(loops, args, kw, profile_filename=None):
         args = [args[0], "-m", "cProfile", "-o", temp_profile_filename] + args[1:]
 
     for _ in range_it:
-        start_rss = get_max_rss(children=True)
+        if sys.platform == 'win32':
+            # resource.getrusage() is not available on Windows:
+            # sample the child process with psutil instead.
+            exitcode, rss = bench_process_windows(args, kw)
+        else:
+            start_rss = get_max_rss(children=True)
 
-        proc = subprocess.Popen(args, **kw)
-        with proc:
-            proc.wait()
+            proc = subprocess.Popen(args, **kw)
+            with proc:
+                proc.wait()
 
-        exitcode = proc.returncode
+            exitcode = proc.returncode
+            rss = get_max_rss(children=True) - start_rss
+
         if exitcode != 0:
             print("Command failed with exit code %s" % exitcode,
                   file=sys.stderr)
@@ -138,7 +126,6 @@ def bench_process(loops, args, kw, profile_filename=None):
                 os.unlink(temp_profile_filename)
             sys.exit(exitcode)
 
-        rss = get_max_rss(children=True) - start_rss
         max_rss = max(max_rss, rss)
 
         if profile_filename:

@@ -4,8 +4,9 @@ Changelog
 Version 2.11.0 (in development)
 -------------------------------
 
-* Feature: Add Windows memory tracking support using ``GetProcessMemoryInfo``.
-  Peak pagefile usage is now reported for benchmarks on Windows.
+* Feature: Add Windows memory tracking support for command benchmarks.
+  The peak RSS of the child process is now sampled with psutil, so
+  ``pyperf command --track-memory`` works on Windows.
 * Bugfix: Fix ``test_command`` failure on Windows due to worker process exit code 1
   when memory tracking was attempted.
 

@@ -23,17 +23,13 @@ else:
             ('PrivateUsage', SIZE_T),
         ]
 
-    try:
-        psapi = ctypes.WinDLL('psapi')
-        GetProcessMemoryInfo = psapi.GetProcessMemoryInfo
-        GetProcessMemoryInfo.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX),
-            wintypes.DWORD,
-        ]
-        GetProcessMemoryInfo.restype = wintypes.BOOL
-    except (AttributeError, OSError):
-        GetProcessMemoryInfo = None
+    GetProcessMemoryInfo = ctypes.windll.psapi.GetProcessMemoryInfo
+    GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX),
+        wintypes.DWORD,
+    ]
+    GetProcessMemoryInfo.restype = wintypes.BOOL
 
 
 def get_peak_pagefile_usage():
